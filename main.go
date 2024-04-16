@@ -2,41 +2,52 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 
+	"github.com/diofanto33/cocosette-proto/golang/auth"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/protojson"
-
-	"github.com/diofanto33/cocosette-proto/golang/auth"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
-	// Create a new gRPC client connection to the AuthService
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	// Create a new gRPC-Gateway mux
-	mux := runtime.NewServeMux(
-		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
-			MarshalOptions: protojson.MarshalOptions{
-				UseProtoNames: true,
-			},
-			UnmarshalOptions: protojson.UnmarshalOptions{
-				DiscardUnknown: true,
-			},
-		}),
+	// create a client connection to the gRPC server we just started
+	// this is where the gRPC-Gateway proxies the requests
+	conn, err := grpc.DialContext(
+		context.Background(),
+		"localhost:50051",
+		grpc.WithBlock(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 
-	// Register the AuthService with the gRPC-Gateway mux
-	err = auth.RegisterAuthServiceHandler(context.Background(), mux, conn)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to dial server: %v", err)
+		return
 	}
 
-	// Create a new HTTP server that uses the gRPC-Gateway mux
-	http.ListenAndServe(":8080", mux)
+	defer conn.Close()
+
+	// muxserver object
+	gwmux := runtime.NewServeMux(
+		runtime.WithMarshalerOption("application/json", &runtime.JSONPb{}),
+	)
+	// register the Auth service handler with the client connection and mux
+	err = auth.RegisterAuthServiceHandler(context.Background(), gwmux, conn)
+	if err != nil {
+		log.Fatalf("Failed to register gateway: %v", err)
+		return
+	}
+
+	// create a new HTTP server and pass the gwmux handler to it
+	gwServer := &http.Server{
+		Addr:    ":8080",
+		Handler: gwmux,
+	}
+	// start the HTTP Server
+	log.Println("Starting HTTP server on", gwServer.Addr)
+	if err := gwServer.ListenAndServe(); err != nil {
+		log.Fatalf("Failed to start HTTP server: %v", err)
+	}
+
 }
